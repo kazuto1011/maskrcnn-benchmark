@@ -81,6 +81,9 @@ class RPNPostProcessor(torch.nn.Module):
         device = objectness.device
         N, A, H, W = objectness.shape
 
+        # @kazuto1011: extract fg scores
+        objectness = objectness[:, int(A / 2) :, ...]
+
         # put in the same format as anchors
         objectness = objectness.permute(0, 2, 3, 1).reshape(N, -1)
         objectness = objectness.sigmoid()

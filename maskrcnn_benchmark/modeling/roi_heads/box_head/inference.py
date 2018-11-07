@@ -136,6 +136,94 @@ class PostProcessor(nn.Module):
         return result
 
 
+class PostProcessorVG(PostProcessor):
+    def forward(self, x, boxes):
+        class_logits, box_regression, attribute_logits = x
+        class_prob = F.softmax(class_logits, -1)
+        attribute_prob = F.softmax(attribute_logits, -1)
+
+        image_shapes = [box.size for box in boxes]
+        boxes_per_image = [len(box) for box in boxes]
+        concat_boxes = torch.cat([a.bbox for a in boxes], dim=0)
+
+        proposals = self.box_coder.decode(
+            box_regression.view(sum(boxes_per_image), -1), concat_boxes
+        )
+
+        num_classes = class_prob.shape[1]
+        num_classes_attr = attribute_prob.shape[1]
+
+        proposals = proposals.split(boxes_per_image, dim=0)
+        class_prob = class_prob.split(boxes_per_image, dim=0)
+        attribute_prob = attribute_prob.split(boxes_per_image, dim=0)
+
+        results = []
+        for prob_cls, prob_attr, boxes_per_img, image_shape in zip(
+            class_prob, attribute_prob, proposals, image_shapes
+        ):
+            boxlist = self.prepare_boxlist(
+                boxes_per_img, prob_cls, prob_attr, image_shape
+            )
+            boxlist = boxlist.clip_to_image(remove_empty=False)
+            boxlist = self.filter_results(boxlist, num_classes, num_classes_attr)
+            results.append(boxlist)
+        return results
+
+    def prepare_boxlist(self, boxes, scores_cls, scores_attr, image_shape):
+        boxes = boxes.reshape(-1, 4)
+        scores_cls = scores_cls.reshape(-1)
+        scores_attr = scores_attr.reshape(-1)
+        boxlist = BoxList(boxes, image_shape, mode="xyxy")
+        boxlist.add_field("scores", scores_cls)
+        boxlist.add_field("scores_attr", scores_attr)
+        return boxlist
+
+    def filter_results(self, boxlist, num_classes, num_classes_attr):
+        boxes = boxlist.bbox.reshape(-1, num_classes * 4)
+        scores = boxlist.get_field("scores").reshape(-1, num_classes)
+        scores_attr = boxlist.get_field("scores_attr").reshape(-1, num_classes_attr)
+
+        device = scores.device
+        result = []
+        inds_all = scores > self.score_thresh
+        for j in range(1, num_classes):
+            inds = inds_all[:, j].nonzero().squeeze(1)
+            scores_j = scores[inds, j]
+            boxes_j = boxes[inds, j * 4 : (j + 1) * 4]
+            scores_attr_j = scores_attr[inds]
+
+            boxlist_for_class = BoxList(boxes_j, boxlist.size, mode="xyxy")
+            boxlist_for_class.add_field("scores", scores_j)
+            boxlist_for_class.add_field("scores_attr", scores_attr_j)
+            boxlist_for_class = boxlist_nms(
+                boxlist_for_class, self.nms, score_field="scores"
+            )
+            num_labels = len(boxlist_for_class)
+            boxlist_for_class.add_field(
+                "labels", torch.full((num_labels,), j, dtype=torch.int64, device=device)
+            )
+            result.append(boxlist_for_class)
+
+        result = cat_boxlist(result)
+        number_of_detections = len(result)
+
+        # Limit to max_per_image detections **over all classes**
+        if number_of_detections > self.detections_per_img > 0:
+            cls_scores = result.get_field("scores")
+            image_thresh, _ = torch.kthvalue(
+                cls_scores.cpu(), number_of_detections - self.detections_per_img + 1
+            )
+            keep = cls_scores >= image_thresh.item()
+            keep = torch.nonzero(keep).squeeze(1)
+            result = result[keep]
+        return result
+
+
+_ROI_BOX_POST_PROCESSOR = {
+    "PostProcessor": PostProcessor,
+    "PostProcessorVG": PostProcessorVG,
+}
+
 def make_roi_box_post_processor(cfg):
     use_fpn = cfg.MODEL.ROI_HEADS.USE_FPN
 
@@ -146,7 +234,7 @@ def make_roi_box_post_processor(cfg):
     nms_thresh = cfg.MODEL.ROI_HEADS.NMS
     detections_per_img = cfg.MODEL.ROI_HEADS.DETECTIONS_PER_IMG
 
-    postprocessor = PostProcessor(
+    postprocessor = _ROI_BOX_POST_PROCESSOR[cfg.MODEL.ROI_BOX_HEAD.POST_PROCESSOR](
         score_thresh, nms_thresh, detections_per_img, box_coder
     )
     return postprocessor

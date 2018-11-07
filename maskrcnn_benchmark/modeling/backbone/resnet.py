@@ -48,6 +48,14 @@ ResNet50FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
     for (i, c, r) in ((1, 3, True), (2, 4, True), (3, 6, True), (4, 3, True))
 )
+ResNet101StagesTo4 = tuple(
+    StageSpec(index=i, block_count=c, return_features=r)
+    for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, True))
+)
+ResNet101StagesTo5 = tuple(
+    StageSpec(index=i, block_count=c, return_features=r)
+    for (i, c, r) in ((1, 3, False), (2, 4, False), (3, 23, False), (4, 3, True))
+)
 # ResNet-101-FPN (including all stages)
 ResNet101FPNStagesTo5 = tuple(
     StageSpec(index=i, block_count=c, return_features=r)
@@ -131,8 +139,57 @@ class ResNetHead(nn.Module):
         stride_in_1x1=True,
         stride_init=None,
         res2_out_channels=256,
+        dilation=1,
     ):
         super(ResNetHead, self).__init__()
+
+        stage2_relative_factor = 2 ** (stages[0].index - 1)
+        stage2_bottleneck_channels = num_groups * width_per_group
+        out_channels = res2_out_channels * stage2_relative_factor
+        in_channels = out_channels // 2
+        bottleneck_channels = stage2_bottleneck_channels * stage2_relative_factor
+
+        block_module = _TRANSFORMATION_MODULES[block_module]
+
+        self.stages = []
+        stride = stride_init
+        for stage in stages:
+            name = "layer" + str(stage.index)
+            if not stride:
+                stride = int(stage.index > 1) + 1
+            module = _make_stage(
+                block_module,
+                in_channels,
+                bottleneck_channels,
+                out_channels,
+                stage.block_count,
+                num_groups,
+                stride_in_1x1,
+                first_stride=stride,
+                dilation=dilation,
+            )
+            stride = None
+            self.add_module(name, module)
+            self.stages.append(name)
+
+    def forward(self, x):
+        for stage in self.stages:
+            x = getattr(self, stage)(x)
+        return x
+
+
+class ResNetHead_(nn.Module):
+    def __init__(
+        self,
+        block_module,
+        stages,
+        num_groups=1,
+        width_per_group=64,
+        stride_in_1x1=True,
+        stride_init=None,
+        res2_out_channels=256,
+    ):
+        super(ResNetHead_, self).__init__()
 
         stage2_relative_factor = 2 ** (stages[0].index - 1)
         stage2_bottleneck_channels = num_groups * width_per_group
@@ -177,6 +234,7 @@ def _make_stage(
     num_groups,
     stride_in_1x1,
     first_stride,
+    dilation=1,
 ):
     blocks = []
     stride = first_stride
@@ -189,6 +247,7 @@ def _make_stage(
                 num_groups,
                 stride_in_1x1,
                 stride,
+                dilation,
             )
         )
         stride = 1
@@ -205,6 +264,7 @@ class BottleneckWithFixedBatchNorm(nn.Module):
         num_groups=1,
         stride_in_1x1=True,
         stride=1,
+        dilation=1,
     ):
         super(BottleneckWithFixedBatchNorm, self).__init__()
 
@@ -237,8 +297,9 @@ class BottleneckWithFixedBatchNorm(nn.Module):
             bottleneck_channels,
             kernel_size=3,
             stride=stride_3x3,
-            padding=1,
+            padding=dilation,
             bias=False,
+            dilation=dilation,
             groups=num_groups,
         )
         self.bn2 = FrozenBatchNorm2d(bottleneck_channels)
@@ -298,6 +359,8 @@ _STAGE_SPECS = {
     "R-50-C4": ResNet50StagesTo4,
     "R-50-C5": ResNet50StagesTo5,
     "R-50-FPN": ResNet50FPNStagesTo5,
+    "R-101-C4": ResNet101StagesTo4,
+    "R-101-C5": ResNet101StagesTo5,
     "R-101-FPN": ResNet101FPNStagesTo5,
 }
 

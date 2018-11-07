@@ -14,7 +14,8 @@ class RPNHead(nn.Module):
     Adds a simple RPN Head with classification and regression heads
     """
 
-    def __init__(self, in_channels, num_anchors):
+    # @kazuto1011: added mid_channels
+    def __init__(self, in_channels, mid_channels, num_anchors):
         """
         Arguments:
             in_channels (int): number of channels of the input feature
@@ -22,11 +23,14 @@ class RPNHead(nn.Module):
         """
         super(RPNHead, self).__init__()
         self.conv = nn.Conv2d(
-            in_channels, in_channels, kernel_size=3, stride=1, padding=1
+            in_channels, mid_channels, kernel_size=3, stride=1, padding=1
         )
-        self.cls_logits = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
+        # @kazuto1011: fg and bg
+        self.cls_logits = nn.Conv2d(
+            mid_channels, num_anchors * 2, kernel_size=1, stride=1
+        )
         self.bbox_pred = nn.Conv2d(
-            in_channels, num_anchors * 4, kernel_size=1, stride=1
+            mid_channels, num_anchors * 4, kernel_size=1, stride=1
         )
 
         for l in [self.conv, self.cls_logits, self.bbox_pred]:
@@ -57,7 +61,11 @@ class RPNModule(torch.nn.Module):
         anchor_generator = make_anchor_generator(cfg)
 
         in_channels = cfg.MODEL.BACKBONE.OUT_CHANNELS
-        head = RPNHead(in_channels, anchor_generator.num_anchors_per_location()[0])
+        head = RPNHead(
+            in_channels,
+            cfg.MODEL.RPN.MID_CHANNELS,
+            anchor_generator.num_anchors_per_location()[0],
+        )
 
         rpn_box_coder = BoxCoder(weights=(1.0, 1.0, 1.0, 1.0))
 
