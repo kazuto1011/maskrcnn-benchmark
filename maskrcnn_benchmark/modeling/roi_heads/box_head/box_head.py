@@ -75,21 +75,16 @@ class ROIBoxHeadVG(ROIBoxHead):
 
     def forward(self, features, proposals, targets=None):
         x = self.feature_extractor(features, proposals)
-        class_logits, box_regression, attribute_logits = self.predictor(x)
+        prediction = self.predictor(x)
 
         if not self.training:
-            result = self.post_processor(
-                (class_logits, box_regression, attribute_logits), proposals
-            )
+            result = self.post_processor(prediction, proposals)
             return x, result, {}
         else:
             raise NotImplementedError
 
 
-_ROI_BOX_HEAD = {
-    "ROIBoxHead": ROIBoxHead,
-    "ROIBoxHeadVG": ROIBoxHeadVG,
-}
+_ROI_BOX_HEAD = {"ROIBoxHead": ROIBoxHead, "ROIBoxHeadVG": ROIBoxHeadVG}
 
 
 def build_roi_box_head(cfg):

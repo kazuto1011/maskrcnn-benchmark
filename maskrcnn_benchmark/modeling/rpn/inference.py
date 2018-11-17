@@ -90,7 +90,7 @@ class RPNPostProcessor(torch.nn.Module):
         box_regression = box_regression.view(N, -1, 4, H, W).permute(0, 3, 4, 1, 2)
         box_regression = box_regression.reshape(N, -1, 4)
 
-        num_anchors = A * H * W
+        num_anchors = int(A / 2) * H * W
 
         pre_nms_top_n = min(self.pre_nms_top_n, num_anchors)
         objectness, topk_idx = objectness.topk(pre_nms_top_n, dim=1, sorted=True)

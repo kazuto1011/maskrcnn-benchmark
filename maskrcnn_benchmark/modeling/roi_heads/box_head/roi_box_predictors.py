@@ -58,17 +58,16 @@ class FastRCNNPredictorVG(nn.Module):
         nn.init.constant_(self.bbox_pred.bias, 0)
 
     def forward(self, x):
-        x = self.avgpool(x)
-        x = x.view(x.size(0), -1)
-        cls_logit = self.cls_score(x)
-        bbox_pred = self.bbox_pred(x)
+        pool5 = self.avgpool(x)
+        pool5 = pool5.view(pool5.size(0), -1)
+        cls_logit = self.cls_score(pool5)
+        bbox_pred = self.bbox_pred(pool5)
         cls_idx = torch.argmax(cls_logit, dim=1)
-        cls_x = self.cls_embedding(cls_idx)
-        h = torch.cat((x, cls_x), dim=1)
+        cls_embed = self.cls_embedding(cls_idx)
+        h = torch.cat((pool5, cls_embed), dim=1)
         h = F.relu(self.fc_attr(h))
         attr_logit = self.attr_score(h)
-
-        return cls_logit, bbox_pred, attr_logit
+        return cls_logit, attr_logit, bbox_pred, pool5
 
 
 class FPNPredictor(nn.Module):

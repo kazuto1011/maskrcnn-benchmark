@@ -31,7 +31,7 @@ class PostProcessor(nn.Module):
         self.nms = nms
         self.detections_per_img = detections_per_img
         if box_coder is None:
-            box_coder = BoxCoder(weights=(10., 10., 5., 5.))
+            box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
         self.box_coder = box_coder
 
     def forward(self, x, boxes):
@@ -138,7 +138,7 @@ class PostProcessor(nn.Module):
 
 class PostProcessorVG(PostProcessor):
     def forward(self, x, boxes):
-        class_logits, box_regression, attribute_logits = x
+        class_logits, attribute_logits, box_regression, pool5_feats = x
         class_prob = F.softmax(class_logits, -1)
         attribute_prob = F.softmax(attribute_logits, -1)
 
@@ -151,37 +151,35 @@ class PostProcessorVG(PostProcessor):
         )
 
         num_classes = class_prob.shape[1]
-        num_classes_attr = attribute_prob.shape[1]
 
         proposals = proposals.split(boxes_per_image, dim=0)
         class_prob = class_prob.split(boxes_per_image, dim=0)
         attribute_prob = attribute_prob.split(boxes_per_image, dim=0)
+        pool5_feats = pool5_feats.split(boxes_per_image, dim=0)
 
         results = []
-        for prob_cls, prob_attr, boxes_per_img, image_shape in zip(
-            class_prob, attribute_prob, proposals, image_shapes
+        for result in zip(
+            proposals, class_prob, attribute_prob, pool5_feats, image_shapes
         ):
-            boxlist = self.prepare_boxlist(
-                boxes_per_img, prob_cls, prob_attr, image_shape
-            )
+            boxlist = self.prepare_boxlist(*result)
             boxlist = boxlist.clip_to_image(remove_empty=False)
-            boxlist = self.filter_results(boxlist, num_classes, num_classes_attr)
+            boxlist = self.filter_results(boxlist, num_classes)
             results.append(boxlist)
         return results
 
-    def prepare_boxlist(self, boxes, scores_cls, scores_attr, image_shape):
+    def prepare_boxlist(self, boxes, scores_cls, scores_attr, pool5_feats, image_shape):
         boxes = boxes.reshape(-1, 4)
-        scores_cls = scores_cls.reshape(-1)
-        scores_attr = scores_attr.reshape(-1)
         boxlist = BoxList(boxes, image_shape, mode="xyxy")
         boxlist.add_field("scores", scores_cls)
         boxlist.add_field("scores_attr", scores_attr)
+        boxlist.add_field("pool5", pool5_feats)
         return boxlist
 
-    def filter_results(self, boxlist, num_classes, num_classes_attr):
+    def filter_results(self, boxlist, num_classes):
         boxes = boxlist.bbox.reshape(-1, num_classes * 4)
-        scores = boxlist.get_field("scores").reshape(-1, num_classes)
-        scores_attr = boxlist.get_field("scores_attr").reshape(-1, num_classes_attr)
+        scores = boxlist.get_field("scores")
+        scores_attr = boxlist.get_field("scores_attr")
+        pool5_feats = boxlist.get_field("pool5")
 
         device = scores.device
         result = []
@@ -191,10 +189,12 @@ class PostProcessorVG(PostProcessor):
             scores_j = scores[inds, j]
             boxes_j = boxes[inds, j * 4 : (j + 1) * 4]
             scores_attr_j = scores_attr[inds]
+            pool5_feats_j = pool5_feats[inds]
 
             boxlist_for_class = BoxList(boxes_j, boxlist.size, mode="xyxy")
             boxlist_for_class.add_field("scores", scores_j)
             boxlist_for_class.add_field("scores_attr", scores_attr_j)
+            boxlist_for_class.add_field("pool5", pool5_feats_j)
             boxlist_for_class = boxlist_nms(
                 boxlist_for_class, self.nms, score_field="scores"
             )
@@ -223,6 +223,7 @@ _ROI_BOX_POST_PROCESSOR = {
     "PostProcessor": PostProcessor,
     "PostProcessorVG": PostProcessorVG,
 }
+
 
 def make_roi_box_post_processor(cfg):
     use_fpn = cfg.MODEL.ROI_HEADS.USE_FPN

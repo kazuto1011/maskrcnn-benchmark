@@ -347,7 +347,7 @@ class StemWithFixedBatchNorm(nn.Module):
         x = self.conv1(x)
         x = self.bn1(x)
         x = F.relu_(x)
-        x = F.max_pool2d(x, kernel_size=3, stride=2, padding=1)
+        x = F.max_pool2d(x, kernel_size=3, stride=2, padding=0, ceil_mode=True)
         return x
 
 
