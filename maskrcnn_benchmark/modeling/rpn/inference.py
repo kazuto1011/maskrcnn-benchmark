@@ -83,13 +83,16 @@ class RPNPostProcessor(torch.nn.Module):
         device = objectness.device
         N, A, H, W = objectness.shape
 
+        # @kazuto1011: extract fg scores
+        objectness = objectness[:, int(A / 2) :, ...]
+
         # put in the same format as anchors
         objectness = permute_and_flatten(objectness, N, A, 1, H, W).view(N, -1)
         objectness = objectness.sigmoid()
 
         box_regression = permute_and_flatten(box_regression, N, A, 4, H, W)
 
-        num_anchors = A * H * W
+        num_anchors = int(A / 2) * H * W
 
         pre_nms_top_n = min(self.pre_nms_top_n, num_anchors)
         objectness, topk_idx = objectness.topk(pre_nms_top_n, dim=1, sorted=True)

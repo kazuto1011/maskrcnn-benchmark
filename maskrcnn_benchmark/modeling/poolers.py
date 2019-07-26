@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from maskrcnn_benchmark.layers import ROIAlign
+from maskrcnn_benchmark.layers import ROIPool
 
 from .utils import cat
 
@@ -63,9 +64,10 @@ class Pooler(nn.Module):
         poolers = []
         for scale in scales:
             poolers.append(
-                ROIAlign(
-                    output_size, spatial_scale=scale, sampling_ratio=sampling_ratio
-                )
+                # ROIAlign(
+                #     output_size, spatial_scale=scale, sampling_ratio=sampling_ratio
+                # )
+                ROIPool(output_size, spatial_scale=scale)
             )
         self.poolers = nn.ModuleList(poolers)
         self.output_size = output_size

@@ -23,7 +23,7 @@ class PostProcessor(nn.Module):
         detections_per_img=100,
         box_coder=None,
         cls_agnostic_bbox_reg=False,
-        bbox_aug_enabled=False
+        bbox_aug_enabled=False,
     ):
         """
         Arguments:
@@ -37,7 +37,7 @@ class PostProcessor(nn.Module):
         self.nms = nms
         self.detections_per_img = detections_per_img
         if box_coder is None:
-            box_coder = BoxCoder(weights=(10., 10., 5., 5.))
+            box_coder = BoxCoder(weights=(10.0, 10.0, 5.0, 5.0))
         self.box_coder = box_coder
         self.cls_agnostic_bbox_reg = cls_agnostic_bbox_reg
         self.bbox_aug_enabled = bbox_aug_enabled
@@ -125,8 +125,89 @@ class PostProcessor(nn.Module):
             boxes_j = boxes[inds, j * 4 : (j + 1) * 4]
             boxlist_for_class = BoxList(boxes_j, boxlist.size, mode="xyxy")
             boxlist_for_class.add_field("scores", scores_j)
+            boxlist_for_class = boxlist_nms(boxlist_for_class, self.nms)
+            num_labels = len(boxlist_for_class)
+            boxlist_for_class.add_field(
+                "labels", torch.full((num_labels,), j, dtype=torch.int64, device=device)
+            )
+            result.append(boxlist_for_class)
+
+        result = cat_boxlist(result)
+        number_of_detections = len(result)
+
+        # Limit to max_per_image detections **over all classes**
+        if number_of_detections > self.detections_per_img > 0:
+            cls_scores = result.get_field("scores")
+            image_thresh, _ = torch.kthvalue(
+                cls_scores.cpu(), number_of_detections - self.detections_per_img + 1
+            )
+            keep = cls_scores >= image_thresh.item()
+            keep = torch.nonzero(keep).squeeze(1)
+            result = result[keep]
+        return result
+
+
+class PostProcessorVG(PostProcessor):
+    def forward(self, x, boxes):
+        class_logits, attribute_logits, box_regression, pool5_feats = x
+        class_prob = F.softmax(class_logits, -1)
+        attribute_prob = F.softmax(attribute_logits, -1)
+
+        image_shapes = [box.size for box in boxes]
+        boxes_per_image = [len(box) for box in boxes]
+        concat_boxes = torch.cat([a.bbox for a in boxes], dim=0)
+
+        proposals = self.box_coder.decode(
+            box_regression.view(sum(boxes_per_image), -1), concat_boxes
+        )
+
+        num_classes = class_prob.shape[1]
+
+        proposals = proposals.split(boxes_per_image, dim=0)
+        class_prob = class_prob.split(boxes_per_image, dim=0)
+        attribute_prob = attribute_prob.split(boxes_per_image, dim=0)
+        pool5_feats = pool5_feats.split(boxes_per_image, dim=0)
+
+        results = []
+        for result in zip(
+            proposals, class_prob, attribute_prob, pool5_feats, image_shapes
+        ):
+            boxlist = self.prepare_boxlist(*result)
+            boxlist = boxlist.clip_to_image(remove_empty=False)
+            boxlist = self.filter_results(boxlist, num_classes)
+            results.append(boxlist)
+        return results
+
+    def prepare_boxlist(self, boxes, scores_cls, scores_attr, pool5_feats, image_shape):
+        boxes = boxes.reshape(-1, 4)
+        boxlist = BoxList(boxes, image_shape, mode="xyxy")
+        boxlist.add_field("scores", scores_cls)
+        boxlist.add_field("scores_attr", scores_attr)
+        boxlist.add_field("pool5", pool5_feats)
+        return boxlist
+
+    def filter_results(self, boxlist, num_classes):
+        boxes = boxlist.bbox.reshape(-1, num_classes * 4)
+        scores = boxlist.get_field("scores")
+        scores_attr = boxlist.get_field("scores_attr")
+        pool5_feats = boxlist.get_field("pool5")
+
+        device = scores.device
+        result = []
+        inds_all = scores > self.score_thresh
+        for j in range(1, num_classes):
+            inds = inds_all[:, j].nonzero().squeeze(1)
+            scores_j = scores[inds, j]
+            boxes_j = boxes[inds, j * 4 : (j + 1) * 4]
+            scores_attr_j = scores_attr[inds]
+            pool5_feats_j = pool5_feats[inds]
+
+            boxlist_for_class = BoxList(boxes_j, boxlist.size, mode="xyxy")
+            boxlist_for_class.add_field("scores", scores_j)
+            boxlist_for_class.add_field("scores_attr", scores_attr_j)
+            boxlist_for_class.add_field("pool5", pool5_feats_j)
             boxlist_for_class = boxlist_nms(
-                boxlist_for_class, self.nms
+                boxlist_for_class, self.nms, score_field="scores"
             )
             num_labels = len(boxlist_for_class)
             boxlist_for_class.add_field(
@@ -149,6 +230,12 @@ class PostProcessor(nn.Module):
         return result
 
 
+_ROI_BOX_POST_PROCESSOR = {
+    "PostProcessor": PostProcessor,
+    "PostProcessorVG": PostProcessorVG,
+}
+
+
 def make_roi_box_post_processor(cfg):
     use_fpn = cfg.MODEL.ROI_HEADS.USE_FPN
 
@@ -161,12 +248,13 @@ def make_roi_box_post_processor(cfg):
     cls_agnostic_bbox_reg = cfg.MODEL.CLS_AGNOSTIC_BBOX_REG
     bbox_aug_enabled = cfg.TEST.BBOX_AUG.ENABLED
 
-    postprocessor = PostProcessor(
+    postprocessor = _ROI_BOX_POST_PROCESSOR[cfg.MODEL.ROI_BOX_HEAD.POST_PROCESSOR](
         score_thresh,
         nms_thresh,
         detections_per_img,
         box_coder,
         cls_agnostic_bbox_reg,
-        bbox_aug_enabled
+        bbox_aug_enabled,
     )
+
     return postprocessor

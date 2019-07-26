@@ -76,6 +76,7 @@ class RPNHead(nn.Module):
     Adds a simple RPN Head with classification and regression heads
     """
 
+    # @kazuto1011: added mid_channels
     def __init__(self, cfg, in_channels, num_anchors):
         """
         Arguments:
@@ -84,12 +85,19 @@ class RPNHead(nn.Module):
             num_anchors (int): number of anchors to be predicted
         """
         super(RPNHead, self).__init__()
+        mid_channels = cfg.MODEL.RPN.MID_CHANNELS
         self.conv = nn.Conv2d(
-            in_channels, in_channels, kernel_size=3, stride=1, padding=1
+            in_channels, mid_channels, kernel_size=3, stride=1, padding=1
         )
-        self.cls_logits = nn.Conv2d(in_channels, num_anchors, kernel_size=1, stride=1)
+        # @kazuto1011: fg and bg
+        self.cls_logits = nn.Conv2d(
+            mid_channels,
+            num_anchors * cfg.MODEL.RPN.N_LOGIT_PER_ANCHOR,
+            kernel_size=1,
+            stride=1,
+        )
         self.bbox_pred = nn.Conv2d(
-            in_channels, num_anchors * 4, kernel_size=1, stride=1
+            mid_channels, num_anchors * 4, kernel_size=1, stride=1
         )
 
         for l in [self.conv, self.cls_logits, self.bbox_pred]:
